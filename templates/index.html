@@ -36,6 +36,10 @@
             <span>Signed in as</span>
             <strong id="currentUserName"></strong>
             <span id="currentUserEmail"></span>
+            <span id="currentUserRole" class="role-badge"></span>
+            <button id="moderationButton" class="secondary-button" type="button" hidden>Teacher Dashboard</button>
+            <button id="feedbackListButton" class="secondary-button" type="button" hidden>View Feedback</button>
+            <button id="feedbackButton" class="secondary-button" type="button">Send Feedback</button>
             <button id="logoutButton" class="danger-button" type="button">Log Out</button>
           </div>
           <p id="authMessage" class="message"></p>
@@ -102,6 +106,62 @@
             <button id="publishQuestionButton" class="primary-button" type="submit">Publish Question</button>
             <p id="questionMessage" class="message"></p>
           </form>
+        </section>
+
+        <section id="feedbackPanel" class="panel composer" hidden>
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Feedback</p>
+              <h3>Send website feedback</h3>
+            </div>
+            <button id="closeFeedbackButton" class="icon-button" type="button" aria-label="Close feedback form">×</button>
+          </div>
+          <form id="feedbackForm" class="stack-form">
+            <label>
+              <span>Feedback</span>
+              <textarea id="feedbackBody" rows="4" placeholder="Report a bug, request a feature, or describe something confusing." required></textarea>
+            </label>
+            <button id="feedbackSubmitButton" class="primary-button" type="submit">Send Feedback</button>
+            <p id="feedbackMessage" class="message"></p>
+          </form>
+        </section>
+
+        <section id="moderationPanel" class="panel composer" hidden>
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Teacher tools</p>
+              <h3>Website moderation</h3>
+            </div>
+            <button id="closeModerationButton" class="icon-button" type="button" aria-label="Close moderation dashboard">×</button>
+          </div>
+          <div id="moderationSummary" class="moderation-summary"></div>
+          <div class="moderation-grid">
+            <section>
+              <h4>Recent Questions</h4>
+              <div id="moderationQuestions" class="moderation-list"></div>
+            </section>
+            <section>
+              <h4>Recent Comments</h4>
+              <div id="moderationComments" class="moderation-list"></div>
+            </section>
+            <section>
+              <h4>Users</h4>
+              <div id="moderationUsers" class="moderation-list"></div>
+            </section>
+          </div>
+          <p id="moderationMessage" class="message"></p>
+        </section>
+
+        <section id="feedbackListPanel" class="panel composer" hidden>
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Developer tools</p>
+              <h3>All feedback</h3>
+            </div>
+            <button id="closeFeedbackListButton" class="icon-button" type="button" aria-label="Close feedback list">×</button>
+          </div>
+          <div id="feedbackList" class="moderation-list"></div>
+          <p id="feedbackListMessage" class="message"></p>
         </section>
 
         <div class="content-grid">

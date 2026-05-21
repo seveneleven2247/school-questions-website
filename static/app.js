@@ -20,6 +20,10 @@ const els = {
   changeEmailButton: document.querySelector("#changeEmailButton"),
   currentUserName: document.querySelector("#currentUserName"),
   currentUserEmail: document.querySelector("#currentUserEmail"),
+  currentUserRole: document.querySelector("#currentUserRole"),
+  moderationButton: document.querySelector("#moderationButton"),
+  feedbackListButton: document.querySelector("#feedbackListButton"),
+  feedbackButton: document.querySelector("#feedbackButton"),
   logoutButton: document.querySelector("#logoutButton"),
   searchInput: document.querySelector("#searchInput"),
   tagList: document.querySelector("#tagList"),
@@ -33,6 +37,23 @@ const els = {
   questionForm: document.querySelector("#questionForm"),
   questionMessage: document.querySelector("#questionMessage"),
   publishQuestionButton: document.querySelector("#publishQuestionButton"),
+  feedbackPanel: document.querySelector("#feedbackPanel"),
+  closeFeedbackButton: document.querySelector("#closeFeedbackButton"),
+  feedbackForm: document.querySelector("#feedbackForm"),
+  feedbackBody: document.querySelector("#feedbackBody"),
+  feedbackSubmitButton: document.querySelector("#feedbackSubmitButton"),
+  feedbackMessage: document.querySelector("#feedbackMessage"),
+  moderationPanel: document.querySelector("#moderationPanel"),
+  closeModerationButton: document.querySelector("#closeModerationButton"),
+  moderationSummary: document.querySelector("#moderationSummary"),
+  moderationQuestions: document.querySelector("#moderationQuestions"),
+  moderationComments: document.querySelector("#moderationComments"),
+  moderationUsers: document.querySelector("#moderationUsers"),
+  moderationMessage: document.querySelector("#moderationMessage"),
+  feedbackListPanel: document.querySelector("#feedbackListPanel"),
+  closeFeedbackListButton: document.querySelector("#closeFeedbackListButton"),
+  feedbackList: document.querySelector("#feedbackList"),
+  feedbackListMessage: document.querySelector("#feedbackListMessage"),
   emptyDetail: document.querySelector("#emptyDetail"),
   questionDetail: document.querySelector("#questionDetail"),
   detailTags: document.querySelector("#detailTags"),
@@ -88,6 +109,14 @@ function updateAuthUi() {
   els.loggedInView.hidden = !loggedIn;
   els.currentUserName.textContent = state.user?.full_name || "";
   els.currentUserEmail.textContent = state.user?.email || "";
+  els.currentUserRole.textContent = state.user?.role ? state.user.role.toUpperCase() : "";
+  els.moderationButton.hidden = !["teacher", "developer"].includes(state.user?.role);
+  els.feedbackListButton.hidden = state.user?.role !== "developer";
+  if (!loggedIn) {
+    els.feedbackPanel.hidden = true;
+    els.moderationPanel.hidden = true;
+    els.feedbackListPanel.hidden = true;
+  }
   els.newQuestionButton.disabled = !loggedIn;
   els.commentSubmitButton.disabled = !loggedIn;
   if (!loggedIn) {
@@ -357,6 +386,130 @@ async function vote(commentId, value) {
   renderQuestionDetail(data.question);
 }
 
+function roleLabel(role) {
+  if (role === "developer") return "Developer";
+  if (role === "teacher") return "Teacher";
+  return "Student";
+}
+
+async function submitFeedback(event) {
+  event.preventDefault();
+  if (!state.user) {
+    setMessage(els.feedbackMessage, "Please log in before sending feedback.", "error");
+    return;
+  }
+  els.feedbackSubmitButton.disabled = true;
+  setMessage(els.feedbackMessage, "Sending...");
+  try {
+    await requestJson("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body: els.feedbackBody.value }),
+    });
+    els.feedbackForm.reset();
+    setMessage(els.feedbackMessage, "Feedback sent.", "success");
+  } catch (error) {
+    setMessage(els.feedbackMessage, error.message, "error");
+  } finally {
+    els.feedbackSubmitButton.disabled = false;
+  }
+}
+
+async function loadModeration() {
+  setMessage(els.moderationMessage, "Loading...");
+  const data = await requestJson("/api/moderation/overview");
+  els.moderationSummary.innerHTML = `
+    <span>${data.users.length} users</span>
+    <span>${data.questions.length} recent questions</span>
+    <span>${data.comments.length} recent comments</span>
+  `;
+  els.moderationQuestions.innerHTML = data.questions.length
+    ? data.questions
+        .map(
+          (question) => `
+            <article class="moderation-item">
+              <div>
+                <strong>${escapeHtml(question.title)}</strong>
+                <p>${escapeHtml(question.description)}</p>
+                <span>${escapeHtml(question.author)} · ${escapeHtml(question.author_email || "")} · ${formatDate(question.created_at)}</span>
+              </div>
+              <button class="danger-button compact-danger" type="button" data-delete-question="${question.id}">Delete</button>
+            </article>
+          `,
+        )
+        .join("")
+    : '<div class="empty-list">No questions yet.</div>';
+  els.moderationComments.innerHTML = data.comments.length
+    ? data.comments
+        .map(
+          (comment) => `
+            <article class="moderation-item">
+              <div>
+                <strong>${escapeHtml(comment.question_title)}</strong>
+                <p>${escapeHtml(comment.body)}</p>
+                <span>${escapeHtml(comment.author)} · ${escapeHtml(comment.author_email || "")} · ${formatDate(comment.created_at)}</span>
+              </div>
+              <button class="danger-button compact-danger" type="button" data-delete-comment="${comment.id}">Delete</button>
+            </article>
+          `,
+        )
+        .join("")
+    : '<div class="empty-list">No comments yet.</div>';
+  els.moderationUsers.innerHTML = data.users.length
+    ? data.users
+        .map(
+          (user) => `
+            <article class="moderation-item">
+              <div>
+                <strong>${escapeHtml(user.full_name)}</strong>
+                <p>${escapeHtml(user.email || "No email")} · ${roleLabel(user.role)}</p>
+                <span>${user.question_count} questions · ${user.comment_count} comments · joined ${formatDate(user.created_at)}</span>
+              </div>
+            </article>
+          `,
+        )
+        .join("")
+    : '<div class="empty-list">No users yet.</div>';
+  setMessage(els.moderationMessage, "");
+}
+
+async function deleteModerationItem(kind, id) {
+  const endpoint =
+    kind === "question"
+      ? `/api/moderation/questions/${id}`
+      : `/api/moderation/comments/${id}`;
+  await requestJson(endpoint, { method: "DELETE" });
+  await loadModeration();
+  await loadQuestions();
+  if (kind === "question" && state.selectedQuestionId === id) {
+    state.selectedQuestionId = null;
+    showEmptyDetail();
+  } else if (state.selectedQuestionId) {
+    openQuestion(state.selectedQuestionId).catch(() => showEmptyDetail());
+  }
+}
+
+async function loadFeedbackList() {
+  setMessage(els.feedbackListMessage, "Loading...");
+  const data = await requestJson("/api/feedback");
+  els.feedbackList.innerHTML = data.feedback.length
+    ? data.feedback
+        .map(
+          (item) => `
+            <article class="moderation-item">
+              <div>
+                <strong>${escapeHtml(item.author)} · ${roleLabel(item.author_role)}</strong>
+                <p>${escapeHtml(item.body)}</p>
+                <span>${escapeHtml(item.author_email || "")} · ${formatDate(item.created_at)}</span>
+              </div>
+            </article>
+          `,
+        )
+        .join("")
+    : '<div class="empty-list">No feedback yet.</div>';
+  setMessage(els.feedbackListMessage, "");
+}
+
 function setupEvents() {
   els.authForm.addEventListener("submit", submitAuth);
   els.changeEmailButton.addEventListener("click", () => setAuthStep("email"));
@@ -372,6 +525,36 @@ function setupEvents() {
 
   els.closeComposerButton.addEventListener("click", () => {
     els.questionComposer.hidden = true;
+  });
+
+  els.feedbackButton.addEventListener("click", () => {
+    els.feedbackPanel.hidden = !els.feedbackPanel.hidden;
+  });
+
+  els.closeFeedbackButton.addEventListener("click", () => {
+    els.feedbackPanel.hidden = true;
+  });
+
+  els.moderationButton.addEventListener("click", () => {
+    els.moderationPanel.hidden = !els.moderationPanel.hidden;
+    if (!els.moderationPanel.hidden) {
+      loadModeration().catch((error) => setMessage(els.moderationMessage, error.message, "error"));
+    }
+  });
+
+  els.closeModerationButton.addEventListener("click", () => {
+    els.moderationPanel.hidden = true;
+  });
+
+  els.feedbackListButton.addEventListener("click", () => {
+    els.feedbackListPanel.hidden = !els.feedbackListPanel.hidden;
+    if (!els.feedbackListPanel.hidden) {
+      loadFeedbackList().catch((error) => setMessage(els.feedbackListMessage, error.message, "error"));
+    }
+  });
+
+  els.closeFeedbackListButton.addEventListener("click", () => {
+    els.feedbackListPanel.hidden = true;
   });
 
   els.searchInput.addEventListener("input", () => {
@@ -407,6 +590,22 @@ function setupEvents() {
 
   els.questionForm.addEventListener("submit", publishQuestion);
   els.commentForm.addEventListener("submit", publishComment);
+  els.feedbackForm.addEventListener("submit", submitFeedback);
+
+  els.moderationPanel.addEventListener("click", (event) => {
+    const questionButton = event.target.closest("[data-delete-question]");
+    const commentButton = event.target.closest("[data-delete-comment]");
+    if (questionButton) {
+      deleteModerationItem("question", Number(questionButton.dataset.deleteQuestion)).catch((error) => {
+        setMessage(els.moderationMessage, error.message, "error");
+      });
+    }
+    if (commentButton) {
+      deleteModerationItem("comment", Number(commentButton.dataset.deleteComment)).catch((error) => {
+        setMessage(els.moderationMessage, error.message, "error");
+      });
+    }
+  });
 }
 
 async function init() {

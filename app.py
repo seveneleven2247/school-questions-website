@@ -1,4 +1,5 @@
 import os
+import re
 import secrets
 import sqlite3
 import smtplib
@@ -90,6 +91,7 @@ SCHOOL_EMAIL_DOMAIN = os.environ.get("SCHOOL_EMAIL_DOMAIN", "stececile.ca").lowe
 LOGIN_CODE_EXPIRE_MINUTES = int(os.environ.get("LOGIN_CODE_EXPIRE_MINUTES", "10"))
 LOGIN_CODE_RESEND_SECONDS = int(os.environ.get("LOGIN_CODE_RESEND_SECONDS", "60"))
 LOGIN_CODE_MAX_ATTEMPTS = int(os.environ.get("LOGIN_CODE_MAX_ATTEMPTS", "5"))
+STUDENT_EMAIL_LOCAL_RE = re.compile(r"^\d{4}[a-z]_[a-z]+$")
 
 
 def utc_now():
@@ -107,6 +109,18 @@ def get_db():
     return connection
 
 
+def role_for_email(email):
+    normalized = (email or "").strip().lower()
+    if normalized == f"2026c_zeng@{SCHOOL_EMAIL_DOMAIN}":
+        return "developer"
+    if "@" not in normalized:
+        return "student"
+    local_part, domain = normalized.rsplit("@", 1)
+    if domain == SCHOOL_EMAIL_DOMAIN and not STUDENT_EMAIL_LOCAL_RE.fullmatch(local_part):
+        return "teacher"
+    return "student"
+
+
 def init_db():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -118,6 +132,7 @@ def init_db():
                 full_name TEXT NOT NULL UNIQUE COLLATE NOCASE,
                 password_hash TEXT NOT NULL,
                 email TEXT UNIQUE COLLATE NOCASE,
+                role TEXT NOT NULL DEFAULT 'student' CHECK(role IN ('student', 'teacher', 'developer')),
                 created_at TEXT NOT NULL
             );
 
@@ -177,6 +192,14 @@ def init_db():
                 FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                body TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
             """
         )
         columns = {
@@ -185,6 +208,8 @@ def init_db():
         }
         if "email" not in columns:
             db.execute("ALTER TABLE users ADD COLUMN email TEXT COLLATE NOCASE")
+        if "role" not in columns:
+            db.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'student'")
         db.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique
@@ -192,6 +217,12 @@ def init_db():
             WHERE email IS NOT NULL
             """
         )
+        users = db.execute("SELECT id, email FROM users WHERE email IS NOT NULL").fetchall()
+        for user in users:
+            db.execute(
+                "UPDATE users SET role = ? WHERE id = ?",
+                (role_for_email(user["email"]), user["id"]),
+            )
 
 
 def current_user():
@@ -200,7 +231,7 @@ def current_user():
         return None
     with get_db() as db:
         user = db.execute(
-            "SELECT id, full_name, email, created_at FROM users WHERE id = ?",
+            "SELECT id, full_name, email, role, created_at FROM users WHERE id = ?",
             (user_id,),
         ).fetchone()
     return dict(user) if user else None
@@ -211,6 +242,27 @@ def require_user_id():
     if not user_id:
         abort(401)
     return user_id
+
+
+def require_current_user():
+    user = current_user()
+    if not user:
+        abort(401)
+    return user
+
+
+def require_moderator():
+    user = require_current_user()
+    if user["role"] not in ("teacher", "developer"):
+        abort(403)
+    return user
+
+
+def require_developer():
+    user = require_current_user()
+    if user["role"] != "developer":
+        abort(403)
+    return user
 
 
 def normalize_school_email(raw_email):
@@ -343,6 +395,24 @@ def insert_attachments(db, attachments):
                 attachment["file_size"],
                 attachment["created_at"],
             ),
+        )
+
+
+def delete_attachment_files(db, owner_type, owner_ids):
+    for owner_id in owner_ids:
+        rows = db.execute(
+            "SELECT stored_name FROM attachments WHERE owner_type = ? AND owner_id = ?",
+            (owner_type, owner_id),
+        ).fetchall()
+        for row in rows:
+            target = UPLOAD_DIR / row["stored_name"]
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                app.logger.warning("Could not delete uploaded file %s", target)
+        db.execute(
+            "DELETE FROM attachments WHERE owner_type = ? AND owner_id = ?",
+            (owner_type, owner_id),
         )
 
 
@@ -584,14 +654,18 @@ def api_verify_login_code():
             full_name = unique_full_name(db, display_name_from_email(email))
             cursor = db.execute(
                 """
-                INSERT INTO users (full_name, password_hash, email, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO users (full_name, password_hash, email, role, created_at)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (full_name, "", email, utc_now()),
+                (full_name, "", email, role_for_email(email), utc_now()),
             )
             user_id = cursor.lastrowid
         else:
             user_id = user["id"]
+            db.execute(
+                "UPDATE users SET role = ? WHERE id = ?",
+                (role_for_email(email), user_id),
+            )
 
         db.execute(
             "UPDATE login_codes SET used_at = ? WHERE id = ?",
@@ -616,6 +690,139 @@ def api_login():
 def api_logout():
     session.clear()
     return jsonify({"ok": True})
+
+
+@app.get("/api/moderation/overview")
+def api_moderation_overview():
+    require_moderator()
+    with get_db() as db:
+        users = db.execute(
+            """
+            SELECT
+                u.id,
+                u.full_name,
+                u.email,
+                u.role,
+                u.created_at,
+                COUNT(DISTINCT q.id) AS question_count,
+                COUNT(DISTINCT c.id) AS comment_count
+            FROM users u
+            LEFT JOIN questions q ON q.user_id = u.id
+            LEFT JOIN comments c ON c.user_id = u.id
+            GROUP BY u.id
+            ORDER BY u.created_at DESC
+            """
+        ).fetchall()
+        questions = db.execute(
+            """
+            SELECT
+                q.id,
+                q.title,
+                q.description,
+                q.created_at,
+                u.full_name AS author,
+                u.email AS author_email,
+                COUNT(DISTINCT c.id) AS comment_count,
+                COUNT(DISTINCT a.id) AS file_count
+            FROM questions q
+            JOIN users u ON u.id = q.user_id
+            LEFT JOIN comments c ON c.question_id = q.id
+            LEFT JOIN attachments a ON a.owner_type = 'question' AND a.owner_id = q.id
+            GROUP BY q.id
+            ORDER BY q.created_at DESC
+            LIMIT 100
+            """
+        ).fetchall()
+        comments = db.execute(
+            """
+            SELECT
+                c.id,
+                c.body,
+                c.created_at,
+                c.question_id,
+                q.title AS question_title,
+                u.full_name AS author,
+                u.email AS author_email,
+                COALESCE(SUM(CASE WHEN cv.value = 1 THEN 1 ELSE 0 END), 0) AS helpful,
+                COALESCE(SUM(CASE WHEN cv.value = -1 THEN 1 ELSE 0 END), 0) AS unhelpful
+            FROM comments c
+            JOIN questions q ON q.id = c.question_id
+            JOIN users u ON u.id = c.user_id
+            LEFT JOIN comment_votes cv ON cv.comment_id = c.id
+            GROUP BY c.id
+            ORDER BY c.created_at DESC
+            LIMIT 100
+            """
+        ).fetchall()
+    return jsonify(
+        {
+            "users": [dict(row) for row in users],
+            "questions": [dict(row) for row in questions],
+            "comments": [dict(row) for row in comments],
+        }
+    )
+
+
+@app.delete("/api/moderation/questions/<int:question_id>")
+def api_moderation_delete_question(question_id):
+    require_moderator()
+    with get_db() as db:
+        question = db.execute("SELECT id FROM questions WHERE id = ?", (question_id,)).fetchone()
+        if not question:
+            return jsonify({"error": "Question not found."}), 404
+        comment_rows = db.execute("SELECT id FROM comments WHERE question_id = ?", (question_id,)).fetchall()
+        delete_attachment_files(db, "question", [question_id])
+        delete_attachment_files(db, "comment", [row["id"] for row in comment_rows])
+        db.execute("DELETE FROM questions WHERE id = ?", (question_id,))
+    return jsonify({"ok": True})
+
+
+@app.delete("/api/moderation/comments/<int:comment_id>")
+def api_moderation_delete_comment(comment_id):
+    require_moderator()
+    with get_db() as db:
+        comment = db.execute("SELECT id FROM comments WHERE id = ?", (comment_id,)).fetchone()
+        if not comment:
+            return jsonify({"error": "Comment not found."}), 404
+        delete_attachment_files(db, "comment", [comment_id])
+        db.execute("DELETE FROM comments WHERE id = ?", (comment_id,))
+    return jsonify({"ok": True})
+
+
+@app.post("/api/feedback")
+def api_create_feedback():
+    user_id = require_user_id()
+    payload = request.get_json(silent=True) or {}
+    body = (payload.get("body") or "").strip()
+    if len(body) < 5:
+        return jsonify({"error": "Feedback must be at least 5 characters."}), 400
+    with get_db() as db:
+        cursor = db.execute(
+            "INSERT INTO feedback (user_id, body, created_at) VALUES (?, ?, ?)",
+            (user_id, body, utc_now()),
+        )
+    return jsonify({"ok": True, "id": cursor.lastrowid}), 201
+
+
+@app.get("/api/feedback")
+def api_feedback_list():
+    require_developer()
+    with get_db() as db:
+        rows = db.execute(
+            """
+            SELECT
+                f.id,
+                f.body,
+                f.created_at,
+                u.full_name AS author,
+                u.email AS author_email,
+                u.role AS author_role
+            FROM feedback f
+            JOIN users u ON u.id = f.user_id
+            ORDER BY f.created_at DESC
+            """
+        ).fetchall()
+    return jsonify({"feedback": [dict(row) for row in rows]})
 
 
 @app.get("/api/questions")
@@ -806,6 +1013,11 @@ def api_vote_comment(comment_id):
 @app.errorhandler(401)
 def unauthorized(_error):
     return jsonify({"error": "Please log in first."}), 401
+
+
+@app.errorhandler(403)
+def forbidden(_error):
+    return jsonify({"error": "You do not have permission to access this area."}), 403
 
 
 @app.errorhandler(413)

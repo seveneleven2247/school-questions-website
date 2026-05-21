@@ -21,20 +21,32 @@
         <section id="authPanel" class="panel auth-panel">
           <div id="loggedOutView">
             <form id="authForm" class="stack-form">
+              <div class="auth-tabs" role="tablist" aria-label="Authentication mode">
+                <button id="loginTab" class="auth-tab active" type="button">Log In</button>
+                <button id="registerTab" class="auth-tab" type="button">Register</button>
+              </div>
               <label>
-                <span>School Email</span>
-                <input id="emailInput" type="email" autocomplete="email" placeholder="name@stececile.ca" required />
+                <span id="identifierLabel">Email or Account Name</span>
+                <input id="emailInput" type="text" autocomplete="username" placeholder="Email or First L" required />
               </label>
               <label id="fullNameField">
                 <span>Full Name</span>
                 <input id="fullNameInput" type="text" autocomplete="name" placeholder="First Last" required />
+              </label>
+              <label id="passwordField">
+                <span>Password</span>
+                <input id="passwordInput" type="password" autocomplete="current-password" minlength="8" required />
+              </label>
+              <label id="confirmPasswordField" hidden>
+                <span>Confirm Password</span>
+                <input id="confirmPasswordInput" type="password" autocomplete="new-password" minlength="8" />
               </label>
               <label id="codeField" hidden>
                 <span>6-Digit Code</span>
                 <input id="codeInput" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" />
               </label>
               <button id="authSubmit" class="primary-button" type="submit">Send Login Code</button>
-              <button id="changeEmailButton" class="text-button" type="button" hidden>Use a different email</button>
+              <button id="changeEmailButton" class="text-button" type="button" hidden>Edit login details</button>
             </form>
           </div>
           <div id="loggedInView" class="user-card" hidden>

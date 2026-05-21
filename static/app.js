@@ -1,6 +1,7 @@
 const state = {
   user: null,
-  authStep: "email",
+  authMode: "login",
+  authStep: "details",
   pendingEmail: "",
   pendingFullName: "",
   selectedTag: "",
@@ -15,8 +16,15 @@ const els = {
   authForm: document.querySelector("#authForm"),
   authSubmit: document.querySelector("#authSubmit"),
   authMessage: document.querySelector("#authMessage"),
+  loginTab: document.querySelector("#loginTab"),
+  registerTab: document.querySelector("#registerTab"),
+  identifierLabel: document.querySelector("#identifierLabel"),
   fullNameField: document.querySelector("#fullNameField"),
   fullNameInput: document.querySelector("#fullNameInput"),
+  passwordField: document.querySelector("#passwordField"),
+  passwordInput: document.querySelector("#passwordInput"),
+  confirmPasswordField: document.querySelector("#confirmPasswordField"),
+  confirmPasswordInput: document.querySelector("#confirmPasswordInput"),
   emailInput: document.querySelector("#emailInput"),
   codeField: document.querySelector("#codeField"),
   codeInput: document.querySelector("#codeInput"),
@@ -131,25 +139,56 @@ function updateAuthUi() {
   }
 }
 
+function setAuthMode(mode) {
+  state.authMode = mode;
+  state.pendingEmail = "";
+  state.pendingFullName = "";
+  state.authStep = "details";
+  els.authForm.reset();
+  setAuthStep("details");
+}
+
 function setAuthStep(step, email = "", fullName = "") {
   state.authStep = step;
   state.pendingEmail = email;
   state.pendingFullName = fullName;
   const enteringCode = step === "code";
+  const registering = state.authMode === "register";
+  els.loginTab.classList.toggle("active", !registering);
+  els.registerTab.classList.toggle("active", registering);
+  els.loginTab.disabled = enteringCode;
+  els.registerTab.disabled = enteringCode;
+  els.identifierLabel.textContent = registering ? "School Email" : "Email or Account Name";
+  els.emailInput.type = registering ? "email" : "text";
+  els.emailInput.placeholder = registering ? "name@stececile.ca" : "Email or First L";
+  els.emailInput.autocomplete = registering ? "email" : "username";
+  els.fullNameField.hidden = !registering;
+  els.confirmPasswordField.hidden = !registering;
+  els.fullNameInput.required = registering;
+  els.confirmPasswordInput.required = registering;
+  els.passwordInput.autocomplete = registering ? "new-password" : "current-password";
   els.fullNameInput.disabled = enteringCode;
+  els.passwordInput.disabled = enteringCode;
+  els.confirmPasswordInput.disabled = enteringCode;
   els.codeField.hidden = !enteringCode;
   els.changeEmailButton.hidden = !enteringCode;
   els.emailInput.disabled = enteringCode;
   els.emailInput.value = email || els.emailInput.value;
   els.fullNameInput.value = fullName || els.fullNameInput.value;
   els.codeInput.required = enteringCode;
-  els.authSubmit.textContent = enteringCode ? "Verify Code" : "Send Login Code";
+  if (enteringCode) {
+    els.authSubmit.textContent = registering ? "Create Account" : "Verify Code";
+  } else {
+    els.authSubmit.textContent = registering ? "Send Register Code" : "Send Login Code";
+  }
   setMessage(els.authMessage, "");
   if (enteringCode) {
     els.codeInput.focus();
   } else {
     els.codeInput.value = "";
     els.fullNameInput.disabled = false;
+    els.passwordInput.disabled = false;
+    els.confirmPasswordInput.disabled = false;
     els.emailInput.disabled = false;
     els.emailInput.focus();
   }
@@ -160,32 +199,51 @@ async function submitAuth(event) {
   setMessage(els.authMessage, "");
   els.authSubmit.disabled = true;
   try {
-    if (state.authStep === "email") {
-      const data = await requestJson("/api/auth/request-code", {
+    if (state.authStep === "details") {
+      if (state.authMode === "register" && els.passwordInput.value !== els.confirmPasswordInput.value) {
+        throw new Error("Passwords do not match.");
+      }
+      const endpoint = state.authMode === "register" ? "/api/auth/register/request-code" : "/api/auth/login/start";
+      const body = state.authMode === "register"
+        ? {
+            email: els.emailInput.value,
+            fullName: els.fullNameInput.value,
+            password: els.passwordInput.value,
+          }
+        : {
+            identifier: els.emailInput.value,
+            password: els.passwordInput.value,
+          };
+      const data = await requestJson(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: els.emailInput.value,
-          fullName: els.fullNameInput.value,
-        }),
+        body: JSON.stringify(body),
       });
       setAuthStep("code", data.email, els.fullNameInput.value);
-      setMessage(els.authMessage, "A 6-digit login code was sent to your school email.", "success");
+      setMessage(els.authMessage, "A 6-digit code was sent to your school email.", "success");
       return;
     }
 
-    const data = await requestJson("/api/auth/verify-code", {
+    const endpoint = state.authMode === "register" ? "/api/auth/register/verify" : "/api/auth/login/verify";
+    const body = state.authMode === "register"
+      ? {
+          email: state.pendingEmail,
+          fullName: state.pendingFullName,
+          password: els.passwordInput.value,
+          code: els.codeInput.value,
+        }
+      : {
+          email: state.pendingEmail,
+          code: els.codeInput.value,
+        };
+    const data = await requestJson(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        email: state.pendingEmail,
-        fullName: state.pendingFullName,
-        code: els.codeInput.value,
-      }),
+      body: JSON.stringify(body),
     });
     state.user = data.user;
     els.authForm.reset();
-    setAuthStep("email");
+    setAuthMode("login");
     updateAuthUi();
     setMessage(els.authMessage, "Logged in.", "success");
   } catch (error) {
@@ -198,7 +256,7 @@ async function submitAuth(event) {
 async function logout() {
   await requestJson("/api/logout", { method: "POST" });
   state.user = null;
-  setAuthStep("email");
+  setAuthMode("login");
   updateAuthUi();
   setMessage(els.authMessage, "Logged out.", "success");
 }
@@ -521,7 +579,9 @@ async function loadFeedbackList() {
 
 function setupEvents() {
   els.authForm.addEventListener("submit", submitAuth);
-  els.changeEmailButton.addEventListener("click", () => setAuthStep("email"));
+  els.loginTab.addEventListener("click", () => setAuthMode("login"));
+  els.registerTab.addEventListener("click", () => setAuthMode("register"));
+  els.changeEmailButton.addEventListener("click", () => setAuthStep("details"));
   els.logoutButton.addEventListener("click", logout);
 
   els.newQuestionButton.addEventListener("click", () => {
@@ -619,7 +679,7 @@ function setupEvents() {
 
 async function init() {
   setupEvents();
-  setAuthStep("email");
+  setAuthMode("login");
   const data = await requestJson("/api/me");
   state.user = data.user;
   updateAuthUi();

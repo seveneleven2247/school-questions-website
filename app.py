@@ -94,6 +94,10 @@ LOGIN_CODE_MAX_ATTEMPTS = int(os.environ.get("LOGIN_CODE_MAX_ATTEMPTS", "5"))
 STUDENT_EMAIL_LOCAL_RE = re.compile(r"^\d{4}[a-z]_[a-z]+$")
 
 
+class LoginCodeRateLimitError(Exception):
+    pass
+
+
 def utc_now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -139,6 +143,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS login_codes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 email TEXT NOT NULL COLLATE NOCASE,
+                purpose TEXT NOT NULL DEFAULT 'login' CHECK(purpose IN ('register', 'login')),
                 code_hash TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0,
@@ -210,6 +215,12 @@ def init_db():
             db.execute("ALTER TABLE users ADD COLUMN email TEXT COLLATE NOCASE")
         if "role" not in columns:
             db.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'student'")
+        login_code_columns = {
+            row["name"]
+            for row in db.execute("PRAGMA table_info(login_codes)").fetchall()
+        }
+        if "purpose" not in login_code_columns:
+            db.execute("ALTER TABLE login_codes ADD COLUMN purpose TEXT NOT NULL DEFAULT 'login'")
         db.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique
@@ -265,6 +276,15 @@ def require_developer():
     return user
 
 
+def clear_pending_auth():
+    for key in (
+        "pending_login_user_id",
+        "pending_login_email",
+        "pending_register_email",
+    ):
+        session.pop(key, None)
+
+
 def normalize_school_email(raw_email):
     email = " ".join((raw_email or "").split()).lower()
     if "@" not in email:
@@ -292,6 +312,24 @@ def display_name_from_full_name(raw_full_name):
         raise ValueError("Enter a valid first and last name.")
 
     return f"{first_name} {last_initial}"
+
+
+def normalize_login_identifier(raw_identifier):
+    identifier = " ".join((raw_identifier or "").split())
+    if not identifier:
+        raise ValueError("Enter your school email or account name.")
+    if "@" in identifier:
+        return normalize_school_email(identifier)
+    return identifier
+
+
+def validate_password(raw_password):
+    password = str(raw_password or "")
+    if len(password) < 8:
+        raise ValueError("Password must be at least 8 characters.")
+    if len(password) > 128:
+        raise ValueError("Password must be 128 characters or fewer.")
+    return password
 
 
 def unique_full_name(db, base_name, exclude_user_id=None):
@@ -325,7 +363,59 @@ def unique_full_name(db, base_name, exclude_user_id=None):
         suffix += 1
 
 
-def send_login_code_email(email, code):
+def find_user_for_login(db, raw_identifier):
+    identifier = normalize_login_identifier(raw_identifier)
+    if "@" in identifier:
+        user = db.execute(
+            "SELECT * FROM users WHERE email = ? COLLATE NOCASE",
+            (identifier,),
+        ).fetchone()
+    else:
+        user = db.execute(
+            "SELECT * FROM users WHERE full_name = ? COLLATE NOCASE",
+            (identifier,),
+        ).fetchone()
+    if not user:
+        raise ValueError("Invalid account name or password.")
+    return user
+
+
+def create_login_code(db, email, purpose):
+    now = datetime.now(timezone.utc)
+    recent = db.execute(
+        """
+        SELECT created_at FROM login_codes
+        WHERE email = ? AND purpose = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (email, purpose),
+    ).fetchone()
+    if recent:
+        created_at = parse_utc(recent["created_at"])
+        seconds_since = (now - created_at).total_seconds()
+        if seconds_since < LOGIN_CODE_RESEND_SECONDS:
+            wait_seconds = int(LOGIN_CODE_RESEND_SECONDS - seconds_since)
+            raise LoginCodeRateLimitError(f"Please wait {wait_seconds} seconds before requesting another code.")
+
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    cursor = db.execute(
+        """
+        INSERT INTO login_codes (email, purpose, code_hash, expires_at, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            email,
+            purpose,
+            generate_password_hash(code),
+            (now + timedelta(minutes=LOGIN_CODE_EXPIRE_MINUTES)).isoformat(timespec="seconds"),
+            now.isoformat(timespec="seconds"),
+        ),
+    )
+    return cursor.lastrowid, code
+
+
+def send_login_code_email(email, code, purpose="login"):
     smtp_host = (os.environ.get("SMTP_HOST") or "").strip()
     smtp_port = int((os.environ.get("SMTP_PORT") or "587").strip())
     smtp_user = (os.environ.get("SMTP_USER") or "").strip()
@@ -339,13 +429,13 @@ def send_login_code_email(email, code):
         raise RuntimeError("Email login is not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASSWORD, and SMTP_FROM.")
 
     message = EmailMessage()
-    message["Subject"] = "Your School Questions login code"
+    message["Subject"] = f"Your School Questions {purpose} code"
     message["From"] = smtp_from
     message["To"] = email
     message.set_content(
         "\n".join(
             [
-                "Use this 6-digit code to log in to School Questions:",
+                f"Use this 6-digit code to {purpose} on School Questions:",
                 "",
                 code,
                 "",
@@ -358,6 +448,69 @@ def send_login_code_email(email, code):
         smtp.starttls()
         smtp.login(smtp_user, smtp_password)
         smtp.send_message(message)
+
+
+def send_code_or_error(email, code, login_code_id, purpose):
+    try:
+        send_login_code_email(email, code, purpose)
+    except RuntimeError as error:
+        return jsonify({"error": str(error)}), 500
+    except smtplib.SMTPAuthenticationError as error:
+        app.logger.exception(
+            "SMTP authentication failed while sending %s code to %s: %s",
+            purpose,
+            email,
+            getattr(error, "smtp_error", error),
+        )
+        with get_db() as db:
+            db.execute("DELETE FROM login_codes WHERE id = ?", (login_code_id,))
+        return jsonify({"error": "SMTP authentication failed. Check SMTP_USER and SMTP_PASSWORD for the sending email account."}), 500
+    except smtplib.SMTPException as error:
+        app.logger.exception("SMTP send failed while sending %s code to %s: %s", purpose, email, error)
+        with get_db() as db:
+            db.execute("DELETE FROM login_codes WHERE id = ?", (login_code_id,))
+        return jsonify({"error": "SMTP send failed. Check SMTP_HOST, SMTP_FROM, and the sending email account settings."}), 500
+    except Exception:
+        app.logger.exception("Unexpected email send failure while sending %s code to %s", purpose, email)
+        with get_db() as db:
+            db.execute("DELETE FROM login_codes WHERE id = ?", (login_code_id,))
+        return jsonify({"error": "Unable to send the login code. Check the Render logs for the exact SMTP error."}), 500
+    return None
+
+
+def normalize_code(raw_code):
+    code = "".join(character for character in str(raw_code or "") if character.isdigit())
+    if len(code) != 6:
+        raise ValueError("Enter the 6-digit code from your email.")
+    return code
+
+
+def verify_login_code(db, email, purpose, raw_code):
+    code = normalize_code(raw_code)
+    now = datetime.now(timezone.utc)
+    login_code = db.execute(
+        """
+        SELECT * FROM login_codes
+        WHERE email = ? AND purpose = ? AND used_at IS NULL
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (email, purpose),
+    ).fetchone()
+    if not login_code:
+        raise ValueError("Request a new login code first.")
+    if parse_utc(login_code["expires_at"]) < now:
+        raise ValueError("This code expired. Request a new code.")
+    if login_code["attempts"] >= LOGIN_CODE_MAX_ATTEMPTS:
+        raise LoginCodeRateLimitError("Too many attempts. Request a new code.")
+
+    db.execute(
+        "UPDATE login_codes SET attempts = attempts + 1 WHERE id = ?",
+        (login_code["id"],),
+    )
+    if not check_password_hash(login_code["code_hash"], code):
+        raise PermissionError("Invalid code.")
+    return login_code
 
 
 def allowed_file(filename):
@@ -565,133 +718,81 @@ def api_me():
     return jsonify({"user": current_user(), "tags": TAGS})
 
 
-@app.post("/api/auth/request-code")
-def api_request_login_code():
+@app.post("/api/auth/register/request-code")
+def api_register_request_code():
     payload = request.get_json(silent=True) or {}
     try:
         email = normalize_school_email(payload.get("email"))
         display_name = display_name_from_full_name(payload.get("fullName"))
+        validate_password(payload.get("password"))
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
-    now = datetime.now(timezone.utc)
     with get_db() as db:
-        recent = db.execute(
-            """
-            SELECT created_at FROM login_codes
-            WHERE email = ?
-            ORDER BY created_at DESC
-            LIMIT 1
-            """,
+        existing = db.execute(
+            "SELECT id, password_hash FROM users WHERE email = ? COLLATE NOCASE",
             (email,),
         ).fetchone()
-        if recent:
-            created_at = parse_utc(recent["created_at"])
-            seconds_since = (now - created_at).total_seconds()
-            if seconds_since < LOGIN_CODE_RESEND_SECONDS:
-                wait_seconds = int(LOGIN_CODE_RESEND_SECONDS - seconds_since)
-                return jsonify({"error": f"Please wait {wait_seconds} seconds before requesting another code."}), 429
+        if existing and existing["password_hash"]:
+            return jsonify({"error": "This email already has an account. Log in instead."}), 409
+        try:
+            login_code_id, code = create_login_code(db, email, "register")
+        except LoginCodeRateLimitError as error:
+            return jsonify({"error": str(error)}), 429
 
-        code = f"{secrets.randbelow(1_000_000):06d}"
-        cursor = db.execute(
-            """
-            INSERT INTO login_codes (email, code_hash, expires_at, created_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                email,
-                generate_password_hash(code),
-                (now + timedelta(minutes=LOGIN_CODE_EXPIRE_MINUTES)).isoformat(timespec="seconds"),
-                now.isoformat(timespec="seconds"),
-            ),
-        )
-        login_code_id = cursor.lastrowid
+    error_response = send_code_or_error(email, code, login_code_id, "register")
+    if error_response:
+        return error_response
 
-    try:
-        send_login_code_email(email, code)
-    except RuntimeError as error:
-        return jsonify({"error": str(error)}), 500
-    except smtplib.SMTPAuthenticationError as error:
-        app.logger.exception(
-            "SMTP authentication failed while sending login code to %s: %s",
-            email,
-            getattr(error, "smtp_error", error),
-        )
-        with get_db() as db:
-            db.execute("DELETE FROM login_codes WHERE id = ?", (login_code_id,))
-        return jsonify({"error": "SMTP authentication failed. Check SMTP_USER and SMTP_PASSWORD for the sending email account."}), 500
-    except smtplib.SMTPException as error:
-        app.logger.exception("SMTP send failed while sending login code to %s: %s", email, error)
-        with get_db() as db:
-            db.execute("DELETE FROM login_codes WHERE id = ?", (login_code_id,))
-        return jsonify({"error": "SMTP send failed. Check SMTP_HOST, SMTP_FROM, and the sending email account settings."}), 500
-    except Exception:
-        app.logger.exception("Unexpected email send failure while sending login code to %s", email)
-        with get_db() as db:
-            db.execute("DELETE FROM login_codes WHERE id = ?", (login_code_id,))
-        return jsonify({"error": "Unable to send the login code. Check the Render logs for the exact SMTP error."}), 500
-
+    session["pending_register_email"] = email
     return jsonify({"ok": True, "email": email, "displayName": display_name})
 
 
-@app.post("/api/auth/verify-code")
-def api_verify_login_code():
+@app.post("/api/auth/register/verify")
+def api_register_verify():
     payload = request.get_json(silent=True) or {}
     try:
         email = normalize_school_email(payload.get("email"))
         display_name = display_name_from_full_name(payload.get("fullName"))
+        password = validate_password(payload.get("password"))
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
-    code = "".join(character for character in str(payload.get("code") or "") if character.isdigit())
-    if len(code) != 6:
-        return jsonify({"error": "Enter the 6-digit code from your email."}), 400
+    if session.get("pending_register_email") != email:
+        return jsonify({"error": "Request a new register code from this browser first."}), 400
 
-    now = datetime.now(timezone.utc)
     with get_db() as db:
-        login_code = db.execute(
-            """
-            SELECT * FROM login_codes
-            WHERE email = ? AND used_at IS NULL
-            ORDER BY created_at DESC
-            LIMIT 1
-            """,
-            (email,),
-        ).fetchone()
-        if not login_code:
-            return jsonify({"error": "Request a new login code first."}), 400
-        if parse_utc(login_code["expires_at"]) < now:
-            return jsonify({"error": "This code expired. Request a new code."}), 400
-        if login_code["attempts"] >= LOGIN_CODE_MAX_ATTEMPTS:
-            return jsonify({"error": "Too many attempts. Request a new code."}), 429
-
-        db.execute(
-            "UPDATE login_codes SET attempts = attempts + 1 WHERE id = ?",
-            (login_code["id"],),
-        )
-        if not check_password_hash(login_code["code_hash"], code):
-            return jsonify({"error": "Invalid code."}), 401
-
-        user = db.execute(
+        existing = db.execute(
             "SELECT * FROM users WHERE email = ? COLLATE NOCASE",
             (email,),
         ).fetchone()
-        if not user:
+        if existing and existing["password_hash"]:
+            return jsonify({"error": "This email already has an account. Log in instead."}), 409
+        try:
+            login_code = verify_login_code(db, email, "register", payload.get("code"))
+        except PermissionError as error:
+            return jsonify({"error": "Invalid code."}), 401
+        except LoginCodeRateLimitError as error:
+            return jsonify({"error": str(error)}), 429
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
+
+        if not existing:
             full_name = unique_full_name(db, display_name)
             cursor = db.execute(
                 """
                 INSERT INTO users (full_name, password_hash, email, role, created_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (full_name, "", email, role_for_email(email), utc_now()),
+                (full_name, generate_password_hash(password), email, role_for_email(email), utc_now()),
             )
             user_id = cursor.lastrowid
         else:
-            user_id = user["id"]
+            user_id = existing["id"]
             full_name = unique_full_name(db, display_name, exclude_user_id=user_id)
             db.execute(
-                "UPDATE users SET full_name = ?, role = ? WHERE id = ?",
-                (full_name, role_for_email(email), user_id),
+                "UPDATE users SET full_name = ?, password_hash = ?, role = ? WHERE id = ?",
+                (full_name, generate_password_hash(password), role_for_email(email), user_id),
             )
 
         db.execute(
@@ -699,18 +800,106 @@ def api_verify_login_code():
             (utc_now(), login_code["id"]),
         )
 
+    clear_pending_auth()
     session["user_id"] = user_id
     return jsonify({"user": current_user()})
 
 
+@app.post("/api/auth/login/start")
+def api_login_start():
+    payload = request.get_json(silent=True) or {}
+    try:
+        password = validate_password(payload.get("password"))
+    except ValueError:
+        return jsonify({"error": "Invalid account name or password."}), 401
+
+    with get_db() as db:
+        try:
+            user = find_user_for_login(db, payload.get("identifier"))
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 401
+        if not user["password_hash"] or not check_password_hash(user["password_hash"], password):
+            return jsonify({"error": "Invalid account name or password."}), 401
+        db.execute(
+            "UPDATE users SET role = ? WHERE id = ?",
+            (role_for_email(user["email"]), user["id"]),
+        )
+        try:
+            login_code_id, code = create_login_code(db, user["email"], "login")
+        except LoginCodeRateLimitError as error:
+            return jsonify({"error": str(error)}), 429
+
+    error_response = send_code_or_error(user["email"], code, login_code_id, "login")
+    if error_response:
+        return error_response
+
+    session["pending_login_user_id"] = user["id"]
+    session["pending_login_email"] = user["email"]
+    return jsonify({"ok": True, "email": user["email"], "displayName": user["full_name"]})
+
+
+@app.post("/api/auth/login/verify")
+def api_login_verify():
+    payload = request.get_json(silent=True) or {}
+    try:
+        email = normalize_school_email(payload.get("email"))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+    if session.get("pending_login_email") != email:
+        return jsonify({"error": "Enter your account name and password before verifying the code."}), 400
+
+    with get_db() as db:
+        user = db.execute(
+            "SELECT * FROM users WHERE email = ? COLLATE NOCASE",
+            (email,),
+        ).fetchone()
+        if not user or not user["password_hash"]:
+            return jsonify({"error": "Invalid account. Register first."}), 401
+        if session.get("pending_login_user_id") != user["id"]:
+            return jsonify({"error": "Enter your account name and password before verifying the code."}), 400
+        try:
+            login_code = verify_login_code(db, email, "login", payload.get("code"))
+        except PermissionError:
+            return jsonify({"error": "Invalid code."}), 401
+        except LoginCodeRateLimitError as error:
+            return jsonify({"error": str(error)}), 429
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
+
+        user_id = user["id"]
+        db.execute(
+            "UPDATE users SET role = ? WHERE id = ?",
+            (role_for_email(email), user_id),
+        )
+        db.execute(
+            "UPDATE login_codes SET used_at = ? WHERE id = ?",
+            (utc_now(), login_code["id"]),
+        )
+
+    clear_pending_auth()
+    session["user_id"] = user_id
+    return jsonify({"user": current_user()})
+
+
+@app.post("/api/auth/request-code")
+def api_request_login_code():
+    return jsonify({"error": "Use password login plus email code instead."}), 410
+
+
+@app.post("/api/auth/verify-code")
+def api_verify_login_code():
+    return jsonify({"error": "Use password login plus email code instead."}), 410
+
+
 @app.post("/api/register")
 def api_register():
-    return jsonify({"error": "Use school email code login instead."}), 410
+    return jsonify({"error": "Use /api/auth/register/request-code and /api/auth/register/verify instead."}), 410
 
 
 @app.post("/api/login")
 def api_login():
-    return jsonify({"error": "Use school email code login instead."}), 410
+    return jsonify({"error": "Use /api/auth/login/start and /api/auth/login/verify instead."}), 410
 
 
 @app.post("/api/logout")

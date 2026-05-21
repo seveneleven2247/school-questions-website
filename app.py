@@ -498,7 +498,7 @@ def api_request_login_code():
                 return jsonify({"error": f"Please wait {wait_seconds} seconds before requesting another code."}), 429
 
         code = f"{secrets.randbelow(1_000_000):06d}"
-        db.execute(
+        cursor = db.execute(
             """
             INSERT INTO login_codes (email, code_hash, expires_at, created_at)
             VALUES (?, ?, ?, ?)
@@ -510,11 +510,17 @@ def api_request_login_code():
                 now.isoformat(timespec="seconds"),
             ),
         )
+        login_code_id = cursor.lastrowid
 
     try:
         send_login_code_email(email, code)
     except RuntimeError as error:
         return jsonify({"error": str(error)}), 500
+    except Exception:
+        app.logger.exception("Failed to send login code to %s", email)
+        with get_db() as db:
+            db.execute("DELETE FROM login_codes WHERE id = ?", (login_code_id,))
+        return jsonify({"error": "Unable to send the login code. Check the SMTP settings in Render."}), 500
 
     return jsonify({"ok": True, "email": email})
 

@@ -19,25 +19,23 @@
 
         <section id="authPanel" class="panel auth-panel">
           <div id="loggedOutView">
-            <div class="auth-tabs" role="tablist" aria-label="Account actions">
-              <button id="registerTab" class="auth-tab active" type="button">Register</button>
-              <button id="loginTab" class="auth-tab" type="button">Log In</button>
-            </div>
             <form id="authForm" class="stack-form">
               <label>
-                <span>Full Name</span>
-                <input id="fullName" type="text" autocomplete="name" required />
+                <span>School Email</span>
+                <input id="emailInput" type="email" autocomplete="email" placeholder="name@stececile.ca" required />
               </label>
-              <label>
-                <span>Password</span>
-                <input id="password" type="password" autocomplete="current-password" minlength="6" required />
+              <label id="codeField" hidden>
+                <span>6-Digit Code</span>
+                <input id="codeInput" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" />
               </label>
-              <button id="authSubmit" class="primary-button" type="submit">Create Account</button>
+              <button id="authSubmit" class="primary-button" type="submit">Send Login Code</button>
+              <button id="changeEmailButton" class="text-button" type="button" hidden>Use a different email</button>
             </form>
           </div>
           <div id="loggedInView" class="user-card" hidden>
             <span>Signed in as</span>
             <strong id="currentUserName"></strong>
+            <span id="currentUserEmail"></span>
             <button id="logoutButton" class="danger-button" type="button">Log Out</button>
           </div>
           <p id="authMessage" class="message"></p>

@@ -1,7 +1,10 @@
 import os
+import secrets
 import sqlite3
+import smtplib
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from pathlib import Path
 
 from flask import (
@@ -83,9 +86,18 @@ app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-school-questions-secret")
 app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
 
+SCHOOL_EMAIL_DOMAIN = os.environ.get("SCHOOL_EMAIL_DOMAIN", "stececile.ca").lower().lstrip("@")
+LOGIN_CODE_EXPIRE_MINUTES = int(os.environ.get("LOGIN_CODE_EXPIRE_MINUTES", "10"))
+LOGIN_CODE_RESEND_SECONDS = int(os.environ.get("LOGIN_CODE_RESEND_SECONDS", "60"))
+LOGIN_CODE_MAX_ATTEMPTS = int(os.environ.get("LOGIN_CODE_MAX_ATTEMPTS", "5"))
+
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def parse_utc(value):
+    return datetime.fromisoformat(value)
 
 
 def get_db():
@@ -105,6 +117,17 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 full_name TEXT NOT NULL UNIQUE COLLATE NOCASE,
                 password_hash TEXT NOT NULL,
+                email TEXT UNIQUE COLLATE NOCASE,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS login_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL COLLATE NOCASE,
+                code_hash TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                used_at TEXT,
                 created_at TEXT NOT NULL
             );
 
@@ -156,6 +179,19 @@ def init_db():
             );
             """
         )
+        columns = {
+            row["name"]
+            for row in db.execute("PRAGMA table_info(users)").fetchall()
+        }
+        if "email" not in columns:
+            db.execute("ALTER TABLE users ADD COLUMN email TEXT COLLATE NOCASE")
+        db.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique
+            ON users(email)
+            WHERE email IS NOT NULL
+            """
+        )
 
 
 def current_user():
@@ -164,7 +200,7 @@ def current_user():
         return None
     with get_db() as db:
         user = db.execute(
-            "SELECT id, full_name, created_at FROM users WHERE id = ?",
+            "SELECT id, full_name, email, created_at FROM users WHERE id = ?",
             (user_id,),
         ).fetchone()
     return dict(user) if user else None
@@ -175,6 +211,77 @@ def require_user_id():
     if not user_id:
         abort(401)
     return user_id
+
+
+def normalize_school_email(raw_email):
+    email = " ".join((raw_email or "").split()).lower()
+    if "@" not in email:
+        raise ValueError(f"Use your @{SCHOOL_EMAIL_DOMAIN} school email address.")
+    local_part, domain = email.rsplit("@", 1)
+    if not local_part or domain != SCHOOL_EMAIL_DOMAIN:
+        raise ValueError(f"Only @{SCHOOL_EMAIL_DOMAIN} email addresses can log in.")
+    return email
+
+
+def display_name_from_email(email):
+    local_part = email.split("@", 1)[0]
+    cleaned = local_part.replace(".", " ").replace("_", " ").replace("-", " ")
+    return " ".join(part.capitalize() for part in cleaned.split()) or email
+
+
+def unique_full_name(db, base_name):
+    existing = db.execute(
+        "SELECT id FROM users WHERE full_name = ? COLLATE NOCASE",
+        (base_name,),
+    ).fetchone()
+    if not existing:
+        return base_name
+
+    suffix = 2
+    while True:
+        candidate = f"{base_name} {suffix}"
+        existing = db.execute(
+            "SELECT id FROM users WHERE full_name = ? COLLATE NOCASE",
+            (candidate,),
+        ).fetchone()
+        if not existing:
+            return candidate
+        suffix += 1
+
+
+def send_login_code_email(email, code):
+    smtp_host = os.environ.get("SMTP_HOST")
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_user = os.environ.get("SMTP_USER")
+    smtp_password = os.environ.get("SMTP_PASSWORD")
+    smtp_from = os.environ.get("SMTP_FROM") or smtp_user
+
+    if not all([smtp_host, smtp_user, smtp_password, smtp_from]):
+        if app.debug or os.environ.get("ALLOW_DEV_LOGIN_CODES") == "true":
+            app.logger.warning("Login code for %s: %s", email, code)
+            return
+        raise RuntimeError("Email login is not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASSWORD, and SMTP_FROM.")
+
+    message = EmailMessage()
+    message["Subject"] = "Your School Questions login code"
+    message["From"] = smtp_from
+    message["To"] = email
+    message.set_content(
+        "\n".join(
+            [
+                "Use this 6-digit code to log in to School Questions:",
+                "",
+                code,
+                "",
+                f"This code expires in {LOGIN_CODE_EXPIRE_MINUTES} minutes.",
+            ]
+        )
+    )
+
+    with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as smtp:
+        smtp.starttls()
+        smtp.login(smtp_user, smtp_password)
+        smtp.send_message(message)
 
 
 def allowed_file(filename):
@@ -364,43 +471,125 @@ def api_me():
     return jsonify({"user": current_user(), "tags": TAGS})
 
 
-@app.post("/api/register")
-def api_register():
+@app.post("/api/auth/request-code")
+def api_request_login_code():
     payload = request.get_json(silent=True) or {}
-    full_name = " ".join((payload.get("fullName") or "").split())
-    password = payload.get("password") or ""
-    if len(full_name) < 2:
-        return jsonify({"error": "Full name is required."}), 400
-    if len(password) < 6:
-        return jsonify({"error": "Password must be at least 6 characters."}), 400
+    try:
+        email = normalize_school_email(payload.get("email"))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+    now = datetime.now(timezone.utc)
+    with get_db() as db:
+        recent = db.execute(
+            """
+            SELECT created_at FROM login_codes
+            WHERE email = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (email,),
+        ).fetchone()
+        if recent:
+            created_at = parse_utc(recent["created_at"])
+            seconds_since = (now - created_at).total_seconds()
+            if seconds_since < LOGIN_CODE_RESEND_SECONDS:
+                wait_seconds = int(LOGIN_CODE_RESEND_SECONDS - seconds_since)
+                return jsonify({"error": f"Please wait {wait_seconds} seconds before requesting another code."}), 429
+
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        db.execute(
+            """
+            INSERT INTO login_codes (email, code_hash, expires_at, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                email,
+                generate_password_hash(code),
+                (now + timedelta(minutes=LOGIN_CODE_EXPIRE_MINUTES)).isoformat(timespec="seconds"),
+                now.isoformat(timespec="seconds"),
+            ),
+        )
 
     try:
-        with get_db() as db:
-            cursor = db.execute(
-                "INSERT INTO users (full_name, password_hash, created_at) VALUES (?, ?, ?)",
-                (full_name, generate_password_hash(password), utc_now()),
-            )
-            session["user_id"] = cursor.lastrowid
-    except sqlite3.IntegrityError:
-        return jsonify({"error": "An account with this full name already exists."}), 409
+        send_login_code_email(email, code)
+    except RuntimeError as error:
+        return jsonify({"error": str(error)}), 500
 
+    return jsonify({"ok": True, "email": email})
+
+
+@app.post("/api/auth/verify-code")
+def api_verify_login_code():
+    payload = request.get_json(silent=True) or {}
+    try:
+        email = normalize_school_email(payload.get("email"))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+    code = "".join(character for character in str(payload.get("code") or "") if character.isdigit())
+    if len(code) != 6:
+        return jsonify({"error": "Enter the 6-digit code from your email."}), 400
+
+    now = datetime.now(timezone.utc)
+    with get_db() as db:
+        login_code = db.execute(
+            """
+            SELECT * FROM login_codes
+            WHERE email = ? AND used_at IS NULL
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (email,),
+        ).fetchone()
+        if not login_code:
+            return jsonify({"error": "Request a new login code first."}), 400
+        if parse_utc(login_code["expires_at"]) < now:
+            return jsonify({"error": "This code expired. Request a new code."}), 400
+        if login_code["attempts"] >= LOGIN_CODE_MAX_ATTEMPTS:
+            return jsonify({"error": "Too many attempts. Request a new code."}), 429
+
+        db.execute(
+            "UPDATE login_codes SET attempts = attempts + 1 WHERE id = ?",
+            (login_code["id"],),
+        )
+        if not check_password_hash(login_code["code_hash"], code):
+            return jsonify({"error": "Invalid code."}), 401
+
+        user = db.execute(
+            "SELECT * FROM users WHERE email = ? COLLATE NOCASE",
+            (email,),
+        ).fetchone()
+        if not user:
+            full_name = unique_full_name(db, display_name_from_email(email))
+            cursor = db.execute(
+                """
+                INSERT INTO users (full_name, password_hash, email, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (full_name, "", email, utc_now()),
+            )
+            user_id = cursor.lastrowid
+        else:
+            user_id = user["id"]
+
+        db.execute(
+            "UPDATE login_codes SET used_at = ? WHERE id = ?",
+            (utc_now(), login_code["id"]),
+        )
+
+    session["user_id"] = user_id
     return jsonify({"user": current_user()})
+
+
+@app.post("/api/register")
+def api_register():
+    return jsonify({"error": "Use school email code login instead."}), 410
 
 
 @app.post("/api/login")
 def api_login():
-    payload = request.get_json(silent=True) or {}
-    full_name = " ".join((payload.get("fullName") or "").split())
-    password = payload.get("password") or ""
-    with get_db() as db:
-        user = db.execute(
-            "SELECT * FROM users WHERE full_name = ? COLLATE NOCASE",
-            (full_name,),
-        ).fetchone()
-    if not user or not check_password_hash(user["password_hash"], password):
-        return jsonify({"error": "Full name or password is incorrect."}), 401
-    session["user_id"] = user["id"]
-    return jsonify({"user": current_user()})
+    return jsonify({"error": "Use school email code login instead."}), 410
 
 
 @app.post("/api/logout")

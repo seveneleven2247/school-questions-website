@@ -164,6 +164,8 @@ function setAuthStep(step, email = "", fullName = "") {
   els.emailInput.autocomplete = registering ? "email" : "username";
   els.fullNameField.hidden = !registering;
   els.confirmPasswordField.hidden = !registering;
+  els.fullNameField.style.display = registering ? "" : "none";
+  els.confirmPasswordField.style.display = registering ? "" : "none";
   els.fullNameInput.required = registering;
   els.confirmPasswordInput.required = registering;
   els.passwordInput.autocomplete = registering ? "new-password" : "current-password";

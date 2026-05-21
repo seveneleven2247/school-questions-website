@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>School Questions</title>
     <link rel="icon" type="image/svg+xml" href="/static/assets/7eleven-logo.svg" />
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=auth-fields-2" />
   </head>
   <body>
     <div class="app-shell">
@@ -29,7 +29,7 @@
                 <span id="identifierLabel">Email or Account Name</span>
                 <input id="emailInput" type="text" autocomplete="username" placeholder="Email or First L" required />
               </label>
-              <label id="fullNameField" hidden>
+              <label id="fullNameField" hidden style="display: none;">
                 <span>Full Name</span>
                 <input id="fullNameInput" type="text" autocomplete="name" placeholder="First Last" />
               </label>
@@ -37,7 +37,7 @@
                 <span>Password</span>
                 <input id="passwordInput" type="password" autocomplete="current-password" minlength="8" required />
               </label>
-              <label id="confirmPasswordField" hidden>
+              <label id="confirmPasswordField" hidden style="display: none;">
                 <span>Confirm Password</span>
                 <input id="confirmPasswordInput" type="password" autocomplete="new-password" minlength="8" />
               </label>
@@ -238,6 +238,6 @@
       </main>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=auth-fields-2"></script>
   </body>
 </html>

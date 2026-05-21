@@ -516,11 +516,21 @@ def api_request_login_code():
         send_login_code_email(email, code)
     except RuntimeError as error:
         return jsonify({"error": str(error)}), 500
-    except Exception:
-        app.logger.exception("Failed to send login code to %s", email)
+    except smtplib.SMTPAuthenticationError:
+        app.logger.exception("SMTP authentication failed while sending login code to %s", email)
         with get_db() as db:
             db.execute("DELETE FROM login_codes WHERE id = ?", (login_code_id,))
-        return jsonify({"error": "Unable to send the login code. Check the SMTP settings in Render."}), 500
+        return jsonify({"error": "SMTP authentication failed. Check SMTP_USER and the Google App Password."}), 500
+    except smtplib.SMTPException:
+        app.logger.exception("SMTP send failed while sending login code to %s", email)
+        with get_db() as db:
+            db.execute("DELETE FROM login_codes WHERE id = ?", (login_code_id,))
+        return jsonify({"error": "SMTP send failed. Check SMTP_HOST, SMTP_FROM, and the Gmail account settings."}), 500
+    except Exception:
+        app.logger.exception("Unexpected email send failure while sending login code to %s", email)
+        with get_db() as db:
+            db.execute("DELETE FROM login_codes WHERE id = ?", (login_code_id,))
+        return jsonify({"error": "Unable to send the login code. Check the Render logs for the exact SMTP error."}), 500
 
     return jsonify({"ok": True, "email": email})
 

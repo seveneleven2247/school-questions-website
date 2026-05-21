@@ -250,11 +250,11 @@ def unique_full_name(db, base_name):
 
 
 def send_login_code_email(email, code):
-    smtp_host = os.environ.get("SMTP_HOST")
-    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
-    smtp_user = os.environ.get("SMTP_USER")
-    smtp_password = os.environ.get("SMTP_PASSWORD")
-    smtp_from = os.environ.get("SMTP_FROM") or smtp_user
+    smtp_host = (os.environ.get("SMTP_HOST") or "").strip()
+    smtp_port = int((os.environ.get("SMTP_PORT") or "587").strip())
+    smtp_user = (os.environ.get("SMTP_USER") or "").strip()
+    smtp_password = "".join((os.environ.get("SMTP_PASSWORD") or "").split())
+    smtp_from = (os.environ.get("SMTP_FROM") or smtp_user).strip()
 
     if not all([smtp_host, smtp_user, smtp_password, smtp_from]):
         if app.debug or os.environ.get("ALLOW_DEV_LOGIN_CODES") == "true":
@@ -516,13 +516,17 @@ def api_request_login_code():
         send_login_code_email(email, code)
     except RuntimeError as error:
         return jsonify({"error": str(error)}), 500
-    except smtplib.SMTPAuthenticationError:
-        app.logger.exception("SMTP authentication failed while sending login code to %s", email)
+    except smtplib.SMTPAuthenticationError as error:
+        app.logger.exception(
+            "SMTP authentication failed while sending login code to %s: %s",
+            email,
+            getattr(error, "smtp_error", error),
+        )
         with get_db() as db:
             db.execute("DELETE FROM login_codes WHERE id = ?", (login_code_id,))
         return jsonify({"error": "SMTP authentication failed. Check SMTP_USER and SMTP_PASSWORD for the sending email account."}), 500
-    except smtplib.SMTPException:
-        app.logger.exception("SMTP send failed while sending login code to %s", email)
+    except smtplib.SMTPException as error:
+        app.logger.exception("SMTP send failed while sending login code to %s: %s", email, error)
         with get_db() as db:
             db.execute("DELETE FROM login_codes WHERE id = ?", (login_code_id,))
         return jsonify({"error": "SMTP send failed. Check SMTP_HOST, SMTP_FROM, and the sending email account settings."}), 500

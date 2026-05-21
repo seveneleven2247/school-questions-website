@@ -2,6 +2,7 @@ const state = {
   user: null,
   authStep: "email",
   pendingEmail: "",
+  pendingFullName: "",
   selectedTag: "",
   query: "",
   questions: [],
@@ -14,6 +15,8 @@ const els = {
   authForm: document.querySelector("#authForm"),
   authSubmit: document.querySelector("#authSubmit"),
   authMessage: document.querySelector("#authMessage"),
+  fullNameField: document.querySelector("#fullNameField"),
+  fullNameInput: document.querySelector("#fullNameInput"),
   emailInput: document.querySelector("#emailInput"),
   codeField: document.querySelector("#codeField"),
   codeInput: document.querySelector("#codeInput"),
@@ -128,14 +131,17 @@ function updateAuthUi() {
   }
 }
 
-function setAuthStep(step, email = "") {
+function setAuthStep(step, email = "", fullName = "") {
   state.authStep = step;
   state.pendingEmail = email;
+  state.pendingFullName = fullName;
   const enteringCode = step === "code";
+  els.fullNameInput.disabled = enteringCode;
   els.codeField.hidden = !enteringCode;
   els.changeEmailButton.hidden = !enteringCode;
   els.emailInput.disabled = enteringCode;
   els.emailInput.value = email || els.emailInput.value;
+  els.fullNameInput.value = fullName || els.fullNameInput.value;
   els.codeInput.required = enteringCode;
   els.authSubmit.textContent = enteringCode ? "Verify Code" : "Send Login Code";
   setMessage(els.authMessage, "");
@@ -143,6 +149,7 @@ function setAuthStep(step, email = "") {
     els.codeInput.focus();
   } else {
     els.codeInput.value = "";
+    els.fullNameInput.disabled = false;
     els.emailInput.disabled = false;
     els.emailInput.focus();
   }
@@ -159,9 +166,10 @@ async function submitAuth(event) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email: els.emailInput.value,
+          fullName: els.fullNameInput.value,
         }),
       });
-      setAuthStep("code", data.email);
+      setAuthStep("code", data.email, els.fullNameInput.value);
       setMessage(els.authMessage, "A 6-digit login code was sent to your school email.", "success");
       return;
     }
@@ -171,6 +179,7 @@ async function submitAuth(event) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         email: state.pendingEmail,
+        fullName: state.pendingFullName,
         code: els.codeInput.value,
       }),
     });

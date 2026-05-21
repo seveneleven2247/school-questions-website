@@ -275,16 +275,35 @@ def normalize_school_email(raw_email):
     return email
 
 
-def display_name_from_email(email):
-    local_part = email.split("@", 1)[0]
-    cleaned = local_part.replace(".", " ").replace("_", " ").replace("-", " ")
-    return " ".join(part.capitalize() for part in cleaned.split()) or email
+def normalize_name_part(name_part):
+    if name_part.islower() or name_part.isupper():
+        return name_part[:1].upper() + name_part[1:].lower()
+    return name_part[:1].upper() + name_part[1:]
 
 
-def unique_full_name(db, base_name):
+def display_name_from_full_name(raw_full_name):
+    parts = " ".join((raw_full_name or "").split()).split()
+    if len(parts) < 2:
+        raise ValueError("Enter your first and last name.")
+
+    first_name = normalize_name_part(parts[0])
+    last_initial = next((character.upper() for character in parts[-1] if character.isalpha()), "")
+    if not first_name or not any(character.isalpha() for character in first_name) or not last_initial:
+        raise ValueError("Enter a valid first and last name.")
+
+    return f"{first_name} {last_initial}"
+
+
+def unique_full_name(db, base_name, exclude_user_id=None):
+    query = "SELECT id FROM users WHERE full_name = ? COLLATE NOCASE"
+    params = [base_name]
+    if exclude_user_id is not None:
+        query += " AND id != ?"
+        params.append(exclude_user_id)
+
     existing = db.execute(
-        "SELECT id FROM users WHERE full_name = ? COLLATE NOCASE",
-        (base_name,),
+        query,
+        params,
     ).fetchone()
     if not existing:
         return base_name
@@ -292,9 +311,14 @@ def unique_full_name(db, base_name):
     suffix = 2
     while True:
         candidate = f"{base_name} {suffix}"
+        query = "SELECT id FROM users WHERE full_name = ? COLLATE NOCASE"
+        params = [candidate]
+        if exclude_user_id is not None:
+            query += " AND id != ?"
+            params.append(exclude_user_id)
         existing = db.execute(
-            "SELECT id FROM users WHERE full_name = ? COLLATE NOCASE",
-            (candidate,),
+            query,
+            params,
         ).fetchone()
         if not existing:
             return candidate
@@ -546,6 +570,7 @@ def api_request_login_code():
     payload = request.get_json(silent=True) or {}
     try:
         email = normalize_school_email(payload.get("email"))
+        display_name = display_name_from_full_name(payload.get("fullName"))
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
@@ -606,7 +631,7 @@ def api_request_login_code():
             db.execute("DELETE FROM login_codes WHERE id = ?", (login_code_id,))
         return jsonify({"error": "Unable to send the login code. Check the Render logs for the exact SMTP error."}), 500
 
-    return jsonify({"ok": True, "email": email})
+    return jsonify({"ok": True, "email": email, "displayName": display_name})
 
 
 @app.post("/api/auth/verify-code")
@@ -614,6 +639,7 @@ def api_verify_login_code():
     payload = request.get_json(silent=True) or {}
     try:
         email = normalize_school_email(payload.get("email"))
+        display_name = display_name_from_full_name(payload.get("fullName"))
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
@@ -651,7 +677,7 @@ def api_verify_login_code():
             (email,),
         ).fetchone()
         if not user:
-            full_name = unique_full_name(db, display_name_from_email(email))
+            full_name = unique_full_name(db, display_name)
             cursor = db.execute(
                 """
                 INSERT INTO users (full_name, password_hash, email, role, created_at)
@@ -662,9 +688,10 @@ def api_verify_login_code():
             user_id = cursor.lastrowid
         else:
             user_id = user["id"]
+            full_name = unique_full_name(db, display_name, exclude_user_id=user_id)
             db.execute(
-                "UPDATE users SET role = ? WHERE id = ?",
-                (role_for_email(email), user_id),
+                "UPDATE users SET full_name = ?, role = ? WHERE id = ?",
+                (full_name, role_for_email(email), user_id),
             )
 
         db.execute(

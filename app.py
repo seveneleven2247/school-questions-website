@@ -838,8 +838,8 @@ def api_questions():
         where.append("filter_tags.tag = ?")
         params.append(selected_tag)
     if query:
-        where.append("(q.title LIKE ? OR q.description LIKE ?)")
-        params.extend([f"%{query}%", f"%{query}%"])
+        where.append("(q.title LIKE ? OR q.description LIKE ? OR u.full_name LIKE ? OR u.email LIKE ?)")
+        params.extend([f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%"])
 
     where_sql = f"WHERE {' AND '.join(where)}" if where else ""
     with get_db() as db:

@@ -48,7 +48,8 @@ button {
   position: sticky;
   top: 0;
   height: 100vh;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -109,10 +110,8 @@ button {
 }
 
 .search-panel {
-  overflow: hidden;
+  overflow: visible;
   display: flex;
-  flex: 1;
-  min-height: 0;
   flex-direction: column;
   gap: 14px;
 }
@@ -289,7 +288,6 @@ textarea:focus {
 }
 
 .tag-list {
-  overflow: auto;
   display: flex;
   flex-direction: column;
   gap: 7px;

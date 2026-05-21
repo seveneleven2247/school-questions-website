@@ -37,5 +37,6 @@ The repository includes `render.yaml` for Render Blueprint deployment. It uses:
 - `gunicorn app:app` as the production start command.
 - `/health` as the health check path.
 - A persistent disk mounted at `/var/data` for the SQLite database and uploaded files.
+- Render requires a paid service plan for persistent disks. This project uses the `starter` plan in `render.yaml`.
 
 On Render, create a new Blueprint from this GitHub repository. Render will create the web service and keep the app online at a public URL.

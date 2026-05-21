@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>School Questions</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <img class="brand-mark" src="/static/assets/ascis-logo.jpg" alt="Académie Ste. Cécile International School logo" />
+          <div>
+            <h1>School Questions</h1>
+            <p>Ask, tag, solve, and vote</p>
+          </div>
+        </div>
+
+        <section id="authPanel" class="panel auth-panel">
+          <div id="loggedOutView">
+            <div class="auth-tabs" role="tablist" aria-label="Account actions">
+              <button id="registerTab" class="auth-tab active" type="button">Register</button>
+              <button id="loginTab" class="auth-tab" type="button">Log In</button>
+            </div>
+            <form id="authForm" class="stack-form">
+              <label>
+                <span>Full Name</span>
+                <input id="fullName" type="text" autocomplete="name" required />
+              </label>
+              <label>
+                <span>Password</span>
+                <input id="password" type="password" autocomplete="current-password" minlength="6" required />
+              </label>
+              <button id="authSubmit" class="primary-button" type="submit">Create Account</button>
+            </form>
+          </div>
+          <div id="loggedInView" class="user-card" hidden>
+            <span>Signed in as</span>
+            <strong id="currentUserName"></strong>
+            <button id="logoutButton" class="danger-button" type="button">Log Out</button>
+          </div>
+          <p id="authMessage" class="message"></p>
+        </section>
+
+        <section class="panel search-panel">
+          <label class="search-field">
+            <span>Search questions</span>
+            <input id="searchInput" type="search" placeholder="Search title or description" />
+          </label>
+          <div class="tag-heading">
+            <strong>Tags</strong>
+            <button id="clearTagButton" class="text-button" type="button">Clear</button>
+          </div>
+          <div id="tagList" class="tag-list" aria-label="Question tags">
+            {% for tag in tags %}
+              <button class="tag-pill" type="button" data-tag="{{ tag }}">{{ tag }}</button>
+            {% endfor %}
+          </div>
+        </section>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Student help board</p>
+            <h2>Publish school questions and organize answers by helpful votes.</h2>
+          </div>
+          <button id="newQuestionButton" class="primary-button" type="button">New Question</button>
+        </header>
+
+        <section id="questionComposer" class="panel composer" hidden>
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Publish</p>
+              <h3>Post a question</h3>
+            </div>
+            <button id="closeComposerButton" class="icon-button" type="button" aria-label="Close composer">×</button>
+          </div>
+          <form id="questionForm" class="stack-form">
+            <label>
+              <span>Question Title</span>
+              <input id="questionTitle" name="title" type="text" required />
+            </label>
+            <label>
+              <span>Description</span>
+              <textarea id="questionDescription" name="description" rows="5" placeholder="Explain what you tried, where you got stuck, and what answer format you need." required></textarea>
+            </label>
+            <div>
+              <span class="field-label">Tags</span>
+              <div id="composerTags" class="selectable-tags">
+                {% for tag in tags %}
+                  <label>
+                    <input type="checkbox" name="tags" value="{{ tag }}" />
+                    <span>{{ tag }}</span>
+                  </label>
+                {% endfor %}
+              </div>
+            </div>
+            <label>
+              <span>Files</span>
+              <input id="questionFiles" name="files" type="file" multiple accept="image/*,.pdf,.txt,.doc,.docx,.ppt,.pptx" />
+            </label>
+            <button id="publishQuestionButton" class="primary-button" type="submit">Publish Question</button>
+            <p id="questionMessage" class="message"></p>
+          </form>
+        </section>
+
+        <div class="content-grid">
+          <section class="panel question-list-panel">
+            <div class="section-head">
+              <div>
+                <p id="activeFilterLabel" class="eyebrow">All tags</p>
+                <h3>Questions</h3>
+              </div>
+              <span id="questionCount" class="count-badge">0</span>
+            </div>
+            <div id="questionList" class="question-list"></div>
+          </section>
+
+          <section class="panel detail-panel">
+            <div id="emptyDetail" class="empty-state">
+              <h3>Select a question</h3>
+              <p>Choose a question from the list to read the full description, files, comments, and votes.</p>
+            </div>
+
+            <article id="questionDetail" hidden>
+              <div class="question-detail-head">
+                <div>
+                  <div id="detailTags" class="inline-tags"></div>
+                  <h3 id="detailTitle"></h3>
+                  <p id="detailMeta" class="meta-text"></p>
+                </div>
+              </div>
+              <p id="detailDescription" class="body-text"></p>
+              <div id="detailFiles" class="file-list"></div>
+
+              <div class="comments-head">
+                <div>
+                  <p class="eyebrow">Answers</p>
+                  <h4>Comments are sorted by helpful votes</h4>
+                </div>
+              </div>
+              <div id="commentList" class="comment-list"></div>
+
+              <form id="commentForm" class="stack-form comment-form">
+                <label>
+                  <span>Your solution or explanation</span>
+                  <textarea id="commentBody" name="body" rows="4" placeholder="Write text, then optionally attach images and PDFs." required></textarea>
+                </label>
+                <label>
+                  <span>Attach files</span>
+                  <input id="commentFiles" name="files" type="file" multiple accept="image/*,.pdf,.txt,.doc,.docx,.ppt,.pptx" />
+                </label>
+                <button id="commentSubmitButton" class="secondary-button" type="submit">Post Comment</button>
+                <p id="commentMessage" class="message"></p>
+              </form>
+            </article>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: school-questions-website
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.0
+      - key: SECRET_KEY
+        generateValue: true
+      - key: APP_DATA_DIR
+        value: /var/data/data
+      - key: APP_UPLOAD_DIR
+        value: /var/data/uploads
+    disk:
+      name: school-question-data
+      mountPath: /var/data
+      sizeGB: 1

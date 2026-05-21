@@ -55,4 +55,24 @@ Set these Render environment variables before using email login:
 - `SMTP_PASSWORD`
 - `SMTP_FROM`
 
+Gmail example:
+
+```text
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your-address@gmail.com
+SMTP_PASSWORD=your-google-app-password
+SMTP_FROM=your-address@gmail.com
+```
+
+Outlook example:
+
+```text
+SMTP_HOST=smtp-mail.outlook.com
+SMTP_PORT=587
+SMTP_USER=your-address@outlook.com
+SMTP_PASSWORD=your-outlook-password-or-app-password
+SMTP_FROM=your-address@outlook.com
+```
+
 On Render, create a new Blueprint from this GitHub repository. Render will create the web service and keep the app online at a public URL.

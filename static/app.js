@@ -71,9 +71,13 @@ function fileLabel(file) {
 
 async function requestJson(url, options = {}) {
   const response = await fetch(url, options);
-  const data = await response.json();
+  const contentType = response.headers.get("content-type") || "";
+  const data = contentType.includes("application/json") ? await response.json() : null;
   if (!response.ok) {
-    throw new Error(data.error || "Request failed.");
+    throw new Error(data?.error || `Server returned ${response.status}. Please try again after deployment finishes.`);
+  }
+  if (!data) {
+    throw new Error("Server returned an unreadable response. Please try again.");
   }
   return data;
 }

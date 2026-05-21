@@ -799,6 +799,12 @@ def file_too_large(_error):
     return jsonify({"error": "Upload is too large. Maximum size is 30 MB."}), 413
 
 
+@app.errorhandler(500)
+def server_error(error):
+    app.logger.exception("Unhandled server error", exc_info=error)
+    return jsonify({"error": "Server error. Check the Render logs and SMTP settings."}), 500
+
+
 init_db()
 
 
